@@ -1,0 +1,2 @@
+# .gitignore im Projekt-Root
+.streamlit/secrets.toml
