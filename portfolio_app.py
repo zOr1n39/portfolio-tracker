@@ -1,48 +1,60 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import datetime
 from curl_cffi.requests.exceptions import HTTPError
 
-# Vollbild-Layout
 st.set_page_config(page_title="Mein Portfolio Tracker", layout="wide")
 
-# CSS-Hack, um die erste Index-Spalte zu verstecken
-st.markdown(
-    """
-    <style>
-      th.row_heading.level0 {display: none !important;}
-      td.blank {display: none !important;}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+st.markdown("""
+<style>
+  .block-container { max-width:100% !important; padding:1rem; }
+  table.dataframe { width:100% !important; }
+  table.dataframe th, table.dataframe td { min-width:120px; }
+  th.row_heading.level0, td.blank { display:none !important; }
+</style>
+""", unsafe_allow_html=True)
 
-# 🔐 Passwortschutz
+USERNAME = st.secrets["credentials"]["username"]
 PASSWORD = st.secrets["credentials"]["password"]
-user_input = st.text_input("Passwort eingeben:", type="password")
-if user_input != PASSWORD:
-    st.warning("Zugriff verweigert")
+
+# ───────────── Login-Maske (nur wenn NICHT eingeloggt) ─────────────
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    col1, col2, col3 = st.columns([2,1,2])
+    with col2:
+        with st.form("login_form", clear_on_submit=False):
+            st.markdown("### Login")
+            entered_user = st.text_input("Username", key="login_user")
+            entered_pw = st.text_input("Passwort", type="password", key="login_pw")
+            login = st.form_submit_button("Login")
+            if login:
+                if entered_user == USERNAME and entered_pw == PASSWORD:
+                    st.session_state.logged_in = True
+                    st.rerun()
+                else:
+                    st.error("Falscher Username oder Passwort!")
     st.stop()
 
-# Titel und Aktualisieren-Button
+# ───────────── Portfolio Tracker ─────────────
 st.title("📈 Mein Portfolio Tracker")
 st.button("🔄 Aktualisieren")
 
-# Portfolio aus Secrets laden
 portfolio = st.secrets["portfolio"]
 
-# 1) EUR/USD-Wechselkurs
-rate = yf.Ticker("EURUSD=X").history(period="1d")["Close"][0]
+rate_data = yf.Ticker("EURUSD=X").history(period="5d")["Close"]
+rate = rate_data.dropna().iloc[-1] if not rate_data.empty else 1.0
 
-# 2) Daten sammeln
 rows = []
 gesamtwert_usd = 0.0
 gesamtgewinn   = 0.0
+today = datetime.date.today()
 
 for ticker, info in portfolio.items():
-    anzahl   = info["anzahl"]
-    einstand = info["einstand"]
-    aktie    = yf.Ticker(ticker)
+    anzahl, einstand = info["anzahl"], info["einstand"]
+    aktie = yf.Ticker(ticker)
 
     try:
         hist = aktie.history(period="1d")
@@ -51,75 +63,85 @@ for ticker, info in portfolio.items():
         hist = pd.DataFrame()
 
     if hist.empty:
-        kurs, gewinn, entwicklung, wert_usd = 0.0, -einstand * anzahl, 0.0, 0.0
+        kurs, wert_usd, gewinn, entwicklung = 0.0, 0.0, -einstand * anzahl, 0.0
     else:
-        kurs        = float(hist["Close"][0])
-        wert_usd    = kurs * anzahl
-        gewinn      = wert_usd - einstand * anzahl
+        kurs = float(hist["Close"][0])
+        wert_usd = kurs * anzahl
+        gewinn = wert_usd - einstand * anzahl
         entwicklung = (kurs - einstand) / einstand * 100
 
+    try:
+        cal = aktie.calendar
+        ne = cal.loc["Earnings Date"].iloc[0]
+        next_earn = ne.date() if hasattr(ne, "date") else None
+    except:
+        info_dict = aktie.info
+        ts = info_dict.get("earningsTimestamp") or info_dict.get("earningsTimestampStart")
+        next_earn = datetime.datetime.fromtimestamp(ts).date() if ts else None
+
+    if not next_earn or next_earn < today:
+        next_earn = None
+
     gesamtwert_usd += wert_usd
-    gesamtgewinn   += gewinn
-    wert_eur       = wert_usd / rate
+    gesamtgewinn += gewinn
+    wert_eur = wert_usd / rate
 
     rows.append({
-        "Aktie":               ticker,
-        "Anzahl":              anzahl,
-        "Einstand ($)":        einstand,
-        "Kurs ($)":            kurs,
-        "Entwicklung (%)":     entwicklung,
-        "Gewinn/Verlust ($)":  gewinn,
-        "Wert ($)":            wert_usd,
-        "Wert (€)":            wert_eur
+        "Aktie": ticker,
+        "Anzahl": anzahl,
+        "Einstand ($)": einstand,
+        "Kurs ($)": kurs,
+        "Entwicklung (%)": entwicklung,
+        "Gewinn/Verlust ($)": gewinn,
+        "Wert ($)": wert_usd,
+        "Wert (€)": wert_eur,
+        "Nächste Q-Zahlen": next_earn or ""
     })
 
-# 3) DataFrame erzeugen
 df = pd.DataFrame(rows)
 
-# Styling-Funktionen
-def fmt_int(x):    return f"{x:,.0f}".replace(",", ".")
-def fmt_flt(x):    return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-def fmt_pct(x):    return fmt_flt(x) + " %"
-def fmt_cash(x):   return fmt_flt(x) + " $"
-def fmt_eur(x):    return fmt_flt(x) + " €"
-def color_pos_neg(v):
-    if pd.isna(v): return ""
-    return "color: green;" if v >= 0 else "color: red;"
+def fmt_int(x): return f"{x:,.0f}".replace(",", ".")
+def fmt_flt(x): return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+def fmt_pct(x): return fmt_flt(x) + " %"
+def fmt_cash(x): return fmt_flt(x) + " $"
+def fmt_eur(x): return fmt_flt(x) + " €"
+def fmt_date(d): return d.strftime("%d.%m.%Y") if isinstance(d, datetime.date) else ""
+def color_pos_neg(v): return "" if pd.isna(v) else ("color: green;" if v >= 0 else "color: red;")
 
-# 4) Styler für die Tabelle (Index versteckt)
 styler = (
     df.style
-      .hide(axis="index")
-      .format({
-          "Anzahl":             fmt_int,
-          "Einstand ($)":       fmt_flt,
-          "Kurs ($)":           fmt_flt,
-          "Entwicklung (%)":    fmt_pct,
-          "Gewinn/Verlust ($)": fmt_cash,
-          "Wert ($)":           fmt_flt,
-          "Wert (€)":           fmt_eur
-      })
-      .applymap(color_pos_neg, subset=["Entwicklung (%)", "Gewinn/Verlust ($)"])
+    .hide(axis="index")
+    .format({
+        "Anzahl": fmt_int,
+        "Einstand ($)": fmt_flt,
+        "Kurs ($)": fmt_flt,
+        "Entwicklung (%)": fmt_pct,
+        "Gewinn/Verlust ($)": fmt_cash,
+        "Wert ($)": fmt_flt,
+        "Wert (€)": fmt_eur,
+        "Nächste Q-Zahlen": fmt_date
+    })
+    .applymap(color_pos_neg, subset=["Entwicklung (%)", "Gewinn/Verlust ($)"])
 )
 
-st.write(styler, unsafe_allow_html=True)
+# Dynamische Höhe: 40 px für Header, ca. 35 px pro Zeile
+table_height = 40 + 35 * len(df)
+st.dataframe(styler, use_container_width=True, height=table_height)
 
-# 5) Gesamtzeile unten
+# Gesamtsumme unten, klein halten
 total = pd.DataFrame([{
     "Gewinn/Verlust ($)": gesamtgewinn,
-    "Wert ($)":           gesamtwert_usd,
-    "Wert (€)":           gesamtwert_usd / rate
+    "Wert ($)": gesamtwert_usd,
+    "Wert (€)": gesamtwert_usd / rate
 }])
-
 total_styler = (
     total.style
-         .hide(axis="index")
-         .format({
-             "Gewinn/Verlust ($)": fmt_cash,
-             "Wert ($)":           fmt_flt,
-             "Wert (€)":           fmt_eur
-         })
-         .applymap(color_pos_neg, subset=["Gewinn/Verlust ($)"])
+    .hide(axis="index")
+    .format({
+        "Gewinn/Verlust ($)": fmt_cash,
+        "Wert ($)": fmt_flt,
+        "Wert (€)": fmt_eur
+    })
+    .applymap(color_pos_neg, subset=["Gewinn/Verlust ($)"])
 )
-
-st.write(total_styler, unsafe_allow_html=True)
+st.dataframe(total_styler, use_container_width=True, height=80)
