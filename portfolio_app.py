@@ -70,25 +70,37 @@ for ticker, info in portfolio.items():
         gewinn = wert_usd - einstand * anzahl
         entwicklung = (kurs - einstand) / einstand * 100
 
-    # --------- Robuste Abfrage der nächsten Q-Zahlen ----------
+    # --------- Robuste Abfrage der nächsten Q-Zahlen (inkl. Filter auf Zukunft) ----------
     try:
         cal = aktie.calendar
         ne = cal.loc["Earnings Date"]
         if len(ne) == 0:
             next_earn = None
         elif hasattr(ne.iloc[0], "date") and (len(ne) == 1 or pd.isna(ne.iloc[1])):
-            # Einzeltermin
             next_earn = ne.iloc[0].date()
         elif len(ne) > 1 and hasattr(ne.iloc[0], "to_pydatetime") and hasattr(ne.iloc[1], "to_pydatetime"):
-            # Spanne, z.B. ["2025-07-30", "2025-08-04"]
             next_earn = f"{ne.iloc[0].strftime('%d.%m.%Y')} – {ne.iloc[1].strftime('%d.%m.%Y')}"
         else:
             next_earn = None
     except Exception:
-        # Fallback für einzelne Aktien mit timestamp (seltener Fall)
         info_dict = aktie.info
         ts = info_dict.get("earningsTimestamp") or info_dict.get("earningsTimestampStart")
         next_earn = datetime.datetime.fromtimestamp(ts).date() if ts else None
+
+    # --- Filter: nur künftige Termine/Spannen anzeigen ---
+    if next_earn:
+        if isinstance(next_earn, datetime.date):
+            if next_earn < today:
+                next_earn = None
+        elif isinstance(next_earn, str) and "–" in next_earn:
+            dates = next_earn.split("–")
+            try:
+                start = datetime.datetime.strptime(dates[0].strip(), "%d.%m.%Y").date()
+                end = datetime.datetime.strptime(dates[1].strip(), "%d.%m.%Y").date()
+                if end < today:
+                    next_earn = None
+            except Exception:
+                pass
 
     gesamtwert_usd += wert_usd
     gesamtgewinn += gewinn
