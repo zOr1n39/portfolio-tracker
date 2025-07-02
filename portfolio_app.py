@@ -70,17 +70,25 @@ for ticker, info in portfolio.items():
         gewinn = wert_usd - einstand * anzahl
         entwicklung = (kurs - einstand) / einstand * 100
 
-    try:
+     try:
         cal = aktie.calendar
-        ne = cal.loc["Earnings Date"].iloc[0]
-        next_earn = ne.date() if hasattr(ne, "date") else None
-    except:
-        info_dict = aktie.info
-        ts = info_dict.get("earningsTimestamp") or info_dict.get("earningsTimestampStart")
-        next_earn = datetime.datetime.fromtimestamp(ts).date() if ts else None
-
-    if not next_earn or next_earn < today:
+        ne = cal.loc["Earnings Date"]
+        if len(ne) == 0:
         next_earn = None
+    elif hasattr(ne.iloc[0], "date") and (len(ne) == 1 or pd.isna(ne.iloc[1])):
+        # Einzeltermin
+        next_earn = ne.iloc[0].date()
+    elif len(ne) > 1 and hasattr(ne.iloc[0], "to_pydatetime") and hasattr(ne.iloc[1], "to_pydatetime"):
+        # Spanne, z.B. ["2025-07-30", "2025-08-04"]
+        next_earn = f"{ne.iloc[0].strftime('%d.%m.%Y')} – {ne.iloc[1].strftime('%d.%m.%Y')}"
+    else:
+        next_earn = None
+except Exception:
+    # Fallback für einzelne Aktien mit timestamp (seltener Fall)
+    info_dict = aktie.info
+    ts = info_dict.get("earningsTimestamp") or info_dict.get("earningsTimestampStart")
+    next_earn = datetime.datetime.fromtimestamp(ts).date() if ts else None
+
 
     gesamtwert_usd += wert_usd
     gesamtgewinn += gewinn
