@@ -23,7 +23,7 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    col1, col2, col3 = st.columns([2,1,2])
+    col1, col2, col3 = st.columns([2, 1, 2])
     with col2:
         with st.form("login_form", clear_on_submit=False):
             st.markdown("### Login")
@@ -49,7 +49,7 @@ rate = rate_data.dropna().iloc[-1] if not rate_data.empty else 1.0
 
 rows = []
 gesamtwert_usd = 0.0
-gesamtgewinn   = 0.0
+gesamtgewinn = 0.0
 today = datetime.date.today()
 
 for ticker, info in portfolio.items():
@@ -70,25 +70,25 @@ for ticker, info in portfolio.items():
         gewinn = wert_usd - einstand * anzahl
         entwicklung = (kurs - einstand) / einstand * 100
 
-     try:
+    # --------- Robuste Abfrage der nächsten Q-Zahlen ----------
+    try:
         cal = aktie.calendar
         ne = cal.loc["Earnings Date"]
         if len(ne) == 0:
-        next_earn = None
-    elif hasattr(ne.iloc[0], "date") and (len(ne) == 1 or pd.isna(ne.iloc[1])):
-        # Einzeltermin
-        next_earn = ne.iloc[0].date()
-    elif len(ne) > 1 and hasattr(ne.iloc[0], "to_pydatetime") and hasattr(ne.iloc[1], "to_pydatetime"):
-        # Spanne, z.B. ["2025-07-30", "2025-08-04"]
-        next_earn = f"{ne.iloc[0].strftime('%d.%m.%Y')} – {ne.iloc[1].strftime('%d.%m.%Y')}"
-    else:
-        next_earn = None
-except Exception:
-    # Fallback für einzelne Aktien mit timestamp (seltener Fall)
-    info_dict = aktie.info
-    ts = info_dict.get("earningsTimestamp") or info_dict.get("earningsTimestampStart")
-    next_earn = datetime.datetime.fromtimestamp(ts).date() if ts else None
-
+            next_earn = None
+        elif hasattr(ne.iloc[0], "date") and (len(ne) == 1 or pd.isna(ne.iloc[1])):
+            # Einzeltermin
+            next_earn = ne.iloc[0].date()
+        elif len(ne) > 1 and hasattr(ne.iloc[0], "to_pydatetime") and hasattr(ne.iloc[1], "to_pydatetime"):
+            # Spanne, z.B. ["2025-07-30", "2025-08-04"]
+            next_earn = f"{ne.iloc[0].strftime('%d.%m.%Y')} – {ne.iloc[1].strftime('%d.%m.%Y')}"
+        else:
+            next_earn = None
+    except Exception:
+        # Fallback für einzelne Aktien mit timestamp (seltener Fall)
+        info_dict = aktie.info
+        ts = info_dict.get("earningsTimestamp") or info_dict.get("earningsTimestampStart")
+        next_earn = datetime.datetime.fromtimestamp(ts).date() if ts else None
 
     gesamtwert_usd += wert_usd
     gesamtgewinn += gewinn
@@ -113,7 +113,7 @@ def fmt_flt(x): return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("
 def fmt_pct(x): return fmt_flt(x) + " %"
 def fmt_cash(x): return fmt_flt(x) + " $"
 def fmt_eur(x): return fmt_flt(x) + " €"
-def fmt_date(d): return d.strftime("%d.%m.%Y") if isinstance(d, datetime.date) else ""
+def fmt_date(d): return d.strftime("%d.%m.%Y") if isinstance(d, datetime.date) else str(d) if d else ""
 def color_pos_neg(v): return "" if pd.isna(v) else ("color: green;" if v >= 0 else "color: red;")
 
 styler = (
