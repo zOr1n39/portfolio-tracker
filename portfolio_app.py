@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import datetime
 from curl_cffi.requests.exceptions import HTTPError
+from yfinance.exceptions import YFRateLimitError
 
 st.set_page_config(page_title="Mein Portfolio Tracker", layout="wide")
 
@@ -44,8 +45,13 @@ st.button("🔄 Aktualisieren")
 
 portfolio = st.secrets["portfolio"]
 
-rate_data = yf.Ticker("EURUSD=X").history(period="5d")["Close"]
-rate = rate_data.dropna().iloc[-1] if not rate_data.empty else 1.0
+# EUR/USD-Kurs robust laden (mit Fallback bei Fehlern / Rate-Limit)
+try:
+    rate_data = yf.Ticker("EURUSD=X").history(period="5d")["Close"]
+    rate = rate_data.dropna().iloc[-1] if not rate_data.empty else 1.0
+except (HTTPError, YFRateLimitError, Exception) as e:
+    st.warning(f"⚠️ Konnte EUR/USD-Kurs nicht laden, nutze 1.0 als Fallback. Fehler: {e}")
+    rate = 1.0
 
 rows = []
 gesamtwert_usd = 0.0
@@ -56,10 +62,14 @@ for ticker, info in portfolio.items():
     anzahl, einstand = info["anzahl"], info["einstand"]
     aktie = yf.Ticker(ticker)
 
+    # Kursdaten laden
     try:
         hist = aktie.history(period="1d")
-    except HTTPError as e:
-        st.warning(f"⚠️ HTTP-Fehler beim Abruf für {ticker}: {e}")
+    except (HTTPError, YFRateLimitError) as e:
+        st.warning(f"⚠️ Fehler beim Abruf der Kursdaten für {ticker}: {e}")
+        hist = pd.DataFrame()
+    except Exception as e:
+        st.warning(f"⚠️ Unerwarteter Fehler beim Abruf der Kursdaten für {ticker}: {e}")
         hist = pd.DataFrame()
 
     if hist.empty:
@@ -68,24 +78,33 @@ for ticker, info in portfolio.items():
         kurs = float(hist["Close"][0])
         wert_usd = kurs * anzahl
         gewinn = wert_usd - einstand * anzahl
-        entwicklung = (kurs - einstand) / einstand * 100
+        entwicklung = (kurs - einstand) / einstand * 100 if einstand != 0 else 0.0
 
-    # --------- Robuste Abfrage der nächsten Q-Zahlen (inkl. Filter auf Zukunft) ----------
+    # --------- Abfrage der nächsten Q-Zahlen (ohne .info) ----------
+    next_earn = None
     try:
         cal = aktie.calendar
-        ne = cal.loc["Earnings Date"]
-        if len(ne) == 0:
-            next_earn = None
-        elif hasattr(ne.iloc[0], "date") and (len(ne) == 1 or pd.isna(ne.iloc[1])):
-            next_earn = ne.iloc[0].date()
-        elif len(ne) > 1 and hasattr(ne.iloc[0], "to_pydatetime") and hasattr(ne.iloc[1], "to_pydatetime"):
-            next_earn = f"{ne.iloc[0].strftime('%d.%m.%Y')} – {ne.iloc[1].strftime('%d.%m.%Y')}"
-        else:
-            next_earn = None
-    except Exception:
-        info_dict = aktie.info
-        ts = info_dict.get("earningsTimestamp") or info_dict.get("earningsTimestampStart")
-        next_earn = datetime.datetime.fromtimestamp(ts).date() if ts else None
+        if cal is not None and not cal.empty and "Earnings Date" in cal.index:
+            ne = cal.loc["Earnings Date"]
+
+            if len(ne) == 0:
+                next_earn = None
+            elif hasattr(ne.iloc[0], "date") and (len(ne) == 1 or pd.isna(ne.iloc[1])):
+                # Einzelnes Datum
+                next_earn = ne.iloc[0].date()
+            elif len(ne) > 1 and hasattr(ne.iloc[0], "strftime") and hasattr(ne.iloc[1], "strftime"):
+                # Datums-Spanne
+                next_earn = f"{ne.iloc[0].strftime('%d.%m.%Y')} – {ne.iloc[1].strftime('%d.%m.%Y')}"
+            else:
+                next_earn = None
+
+    except YFRateLimitError:
+        st.warning(f"⚠️ Yahoo Finance Rate-Limit bei Earnings-Daten für {ticker} – keine Earnings-Daten geladen.")
+        next_earn = None
+    except Exception as e:
+        # Kein Fallback mehr auf .info, um Rate-Limit-Probleme zu vermeiden
+        st.warning(f"⚠️ Konnte Earnings-Daten für {ticker} nicht laden: {e}")
+        next_earn = None
 
     # --- Filter: nur künftige Termine/Spannen anzeigen ---
     if next_earn:
@@ -120,13 +139,26 @@ for ticker, info in portfolio.items():
 
 df = pd.DataFrame(rows)
 
-def fmt_int(x): return f"{x:,.0f}".replace(",", ".")
-def fmt_flt(x): return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-def fmt_pct(x): return fmt_flt(x) + " %"
-def fmt_cash(x): return fmt_flt(x) + " $"
-def fmt_eur(x): return fmt_flt(x) + " €"
-def fmt_date(d): return d.strftime("%d.%m.%Y") if isinstance(d, datetime.date) else str(d) if d else ""
-def color_pos_neg(v): return "" if pd.isna(v) else ("color: green;" if v >= 0 else "color: red;")
+def fmt_int(x): 
+    return f"{x:,.0f}".replace(",", ".")
+
+def fmt_flt(x): 
+    return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def fmt_pct(x): 
+    return fmt_flt(x) + " %"
+
+def fmt_cash(x): 
+    return fmt_flt(x) + " $"
+
+def fmt_eur(x): 
+    return fmt_flt(x) + " €"
+
+def fmt_date(d): 
+    return d.strftime("%d.%m.%Y") if isinstance(d, datetime.date) else str(d) if d else ""
+
+def color_pos_neg(v): 
+    return "" if pd.isna(v) else ("color: green;" if v >= 0 else "color: red;")
 
 styler = (
     df.style
@@ -154,6 +186,7 @@ total = pd.DataFrame([{
     "Wert ($)": gesamtwert_usd,
     "Wert (€)": gesamtwert_usd / rate
 }])
+
 total_styler = (
     total.style
     .hide(axis="index")
@@ -164,4 +197,5 @@ total_styler = (
     })
     .applymap(color_pos_neg, subset=["Gewinn/Verlust ($)"])
 )
+
 st.dataframe(total_styler, use_container_width=True, height=80)
