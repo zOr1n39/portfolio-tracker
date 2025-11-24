@@ -43,6 +43,16 @@ if not st.session_state.logged_in:
 st.title("📈 Mein Portfolio Tracker")
 st.button("🔄 Aktualisieren")
 
+# Option: Earnings-Daten ein-/ausschalten
+load_earnings = st.checkbox(
+    "Nächste Earnings-Termine laden (kann langsamer sein / Rate-Limits verursachen)",
+    value=False
+)
+
+# Flag, damit Rate-Limit-Warnung für Earnings nur einmal gezeigt wird
+if "earnings_rate_limit_warned" not in st.session_state:
+    st.session_state.earnings_rate_limit_warned = False
+
 portfolio = st.secrets["portfolio"]
 
 # EUR/USD-Kurs robust laden (mit Fallback bei Fehlern / Rate-Limit)
@@ -75,52 +85,63 @@ for ticker, info in portfolio.items():
     if hist.empty:
         kurs, wert_usd, gewinn, entwicklung = 0.0, 0.0, -einstand * anzahl, 0.0
     else:
-        kurs = float(hist["Close"][0])
+        # <- hier war vorher die Series[0]-Warnung
+        close_series = hist["Close"]
+        kurs = float(close_series.iloc[0])  # positionsbasiert über iloc
         wert_usd = kurs * anzahl
         gewinn = wert_usd - einstand * anzahl
         entwicklung = (kurs - einstand) / einstand * 100 if einstand != 0 else 0.0
 
-    # --------- Abfrage der nächsten Q-Zahlen (ohne .info) ----------
+    # --------- Abfrage der nächsten Q-Zahlen (optional, ohne .info) ----------
     next_earn = None
-    try:
-        cal = aktie.calendar
-        if cal is not None and not cal.empty and "Earnings Date" in cal.index:
-            ne = cal.loc["Earnings Date"]
 
-            if len(ne) == 0:
-                next_earn = None
-            elif hasattr(ne.iloc[0], "date") and (len(ne) == 1 or pd.isna(ne.iloc[1])):
-                # Einzelnes Datum
-                next_earn = ne.iloc[0].date()
-            elif len(ne) > 1 and hasattr(ne.iloc[0], "strftime") and hasattr(ne.iloc[1], "strftime"):
-                # Datums-Spanne
-                next_earn = f"{ne.iloc[0].strftime('%d.%m.%Y')} – {ne.iloc[1].strftime('%d.%m.%Y')}"
-            else:
-                next_earn = None
+    if load_earnings:
+        try:
+            cal = aktie.calendar
+            if cal is not None and not cal.empty and "Earnings Date" in cal.index:
+                ne = cal.loc["Earnings Date"]
 
-    except YFRateLimitError:
-        st.warning(f"⚠️ Yahoo Finance Rate-Limit bei Earnings-Daten für {ticker} – keine Earnings-Daten geladen.")
-        next_earn = None
-    except Exception as e:
-        # Kein Fallback mehr auf .info, um Rate-Limit-Probleme zu vermeiden
-        st.warning(f"⚠️ Konnte Earnings-Daten für {ticker} nicht laden: {e}")
-        next_earn = None
-
-    # --- Filter: nur künftige Termine/Spannen anzeigen ---
-    if next_earn:
-        if isinstance(next_earn, datetime.date):
-            if next_earn < today:
-                next_earn = None
-        elif isinstance(next_earn, str) and "–" in next_earn:
-            dates = next_earn.split("–")
-            try:
-                start = datetime.datetime.strptime(dates[0].strip(), "%d.%m.%Y").date()
-                end = datetime.datetime.strptime(dates[1].strip(), "%d.%m.%Y").date()
-                if end < today:
+                if len(ne) == 0:
                     next_earn = None
-            except Exception:
-                pass
+                elif hasattr(ne.iloc[0], "date") and (len(ne) == 1 or pd.isna(ne.iloc[1])):
+                    # Einzelnes Datum
+                    next_earn = ne.iloc[0].date()
+                elif len(ne) > 1 and hasattr(ne.iloc[0], "strftime") and hasattr(ne.iloc[1], "strftime"):
+                    # Datums-Spanne
+                    next_earn = f"{ne.iloc[0].strftime('%d.%m.%Y')} – {ne.iloc[1].strftime('%d.%m.%Y')}"
+                else:
+                    next_earn = None
 
+        except YFRateLimitError:
+            # Nur eine globale Warnung für alle Earnings-Rate-Limits
+            if not st.session_state.earnings_rate_limit_warned:
+                st.warning(
+                    "⚠️ Yahoo Finance Rate-Limit bei Earnings-Daten – "
+                    "Earnings-Termine werden für diesen Durchlauf nicht weiter geladen."
+                )
+                st.session_state.earnings_rate_limit_warned = True
+            next_earn = None
+        except Exception as e:
+            # Andere Fehler je Ticker anzeigen
+            st.warning(f"⚠️ Konnte Earnings-Daten für {ticker} nicht laden: {e}")
+            next_earn = None
+
+        # --- Filter: nur künftige Termine/Spannen anzeigen ---
+        if next_earn:
+            if isinstance(next_earn, datetime.date):
+                if next_earn < today:
+                    next_earn = None
+            elif isinstance(next_earn, str) and "–" in next_earn:
+                dates = next_earn.split("–")
+                try:
+                    start = datetime.datetime.strptime(dates[0].strip(), "%d.%m.%Y").date()
+                    end = datetime.datetime.strptime(dates[1].strip(), "%d.%m.%Y").date()
+                    if end < today:
+                        next_earn = None
+                except Exception:
+                    pass
+
+    # Wenn Earnings deaktiviert oder Fehler: next_earn bleibt None
     gesamtwert_usd += wert_usd
     gesamtgewinn += gewinn
     wert_eur = wert_usd / rate
@@ -139,25 +160,25 @@ for ticker, info in portfolio.items():
 
 df = pd.DataFrame(rows)
 
-def fmt_int(x): 
+def fmt_int(x):
     return f"{x:,.0f}".replace(",", ".")
 
-def fmt_flt(x): 
+def fmt_flt(x):
     return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def fmt_pct(x): 
+def fmt_pct(x):
     return fmt_flt(x) + " %"
 
-def fmt_cash(x): 
+def fmt_cash(x):
     return fmt_flt(x) + " $"
 
-def fmt_eur(x): 
+def fmt_eur(x):
     return fmt_flt(x) + " €"
 
-def fmt_date(d): 
+def fmt_date(d):
     return d.strftime("%d.%m.%Y") if isinstance(d, datetime.date) else str(d) if d else ""
 
-def color_pos_neg(v): 
+def color_pos_neg(v):
     return "" if pd.isna(v) else ("color: green;" if v >= 0 else "color: red;")
 
 styler = (
@@ -173,12 +194,15 @@ styler = (
         "Wert (€)": fmt_eur,
         "Nächste Q-Zahlen": fmt_date
     })
-    .applymap(color_pos_neg, subset=["Entwicklung (%)", "Gewinn/Verlust ($)"])
+    # applymap -> map (FutureWarning fix)
+    .map(color_pos_neg, subset=["Entwicklung (%)", "Gewinn/Verlust ($)"])
 )
 
 # Dynamische Höhe: 40 px für Header, ca. 35 px pro Zeile
 table_height = 40 + 35 * len(df)
-st.dataframe(styler, use_container_width=True, height=table_height)
+
+# use_container_width -> width="stretch" (Future deprecation fix)
+st.dataframe(styler, width="stretch", height=table_height)
 
 # Gesamtsumme unten, klein halten
 total = pd.DataFrame([{
@@ -195,7 +219,7 @@ total_styler = (
         "Wert ($)": fmt_flt,
         "Wert (€)": fmt_eur
     })
-    .applymap(color_pos_neg, subset=["Gewinn/Verlust ($)"])
+    .map(color_pos_neg, subset=["Gewinn/Verlust ($)"])
 )
 
-st.dataframe(total_styler, use_container_width=True, height=80)
+st.dataframe(total_styler, width="stretch", height=80)
